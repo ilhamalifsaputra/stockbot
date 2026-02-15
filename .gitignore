@@ -1,0 +1,12 @@
+# dependencies
+node_modules/
+
+# stock data (sensitif)
+stock/
+
+# logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
