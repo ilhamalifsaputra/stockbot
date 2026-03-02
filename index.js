@@ -2,16 +2,18 @@ import { Telegraf, Markup } from "telegraf";
 import fs from "fs-extra";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
+import { fileURLToPath } from "url";
+import path from "path";
+
 dotenv.config();
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ===== CONFIG =====
 const ADMINS = [5840513237]; // Admin Telegram ID
-const STOCK_DIR = "./stock";
-
-// ===== STATE =====
-const userSession = {};
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const STOCK_DIR = path.join(__dirname, "stock");       // Fix Bug #1: path absolut
+const SESSION_FILE = path.join(__dirname, "sessions.json"); // Fix Bug #2: persistent session
 
 // ===== GUARD =====
 function adminOnly(ctx) {
@@ -22,7 +24,36 @@ function adminOnly(ctx) {
   return true;
 }
 
-// ===== UTIL (RAW MODE) =====
+// ===== PERSISTENT SESSION =====  Fix Bug #2
+function getSession(userId) {
+  if (!fs.existsSync(SESSION_FILE)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8"));
+    return data[String(userId)] || null;
+  } catch {
+    return null;
+  }
+}
+
+function setSession(userId, data) {
+  let sessions = {};
+  if (fs.existsSync(SESSION_FILE)) {
+    try { sessions = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8")); } catch {}
+  }
+  sessions[String(userId)] = data;
+  fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions, null, 2));
+}
+
+function deleteSession(userId) {
+  if (!fs.existsSync(SESSION_FILE)) return;
+  try {
+    const sessions = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8"));
+    delete sessions[String(userId)];
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions, null, 2));
+  } catch {}
+}
+
+// ===== UTIL =====
 function formatNumberID(n) {
   return new Intl.NumberFormat("id-ID").format(n);
 }
@@ -36,7 +67,7 @@ function getProducts() {
 }
 
 function readStockLines(product) {
-  const file = `${STOCK_DIR}/${product}.txt`;
+  const file = path.join(STOCK_DIR, `${product}.txt`);
   if (!fs.existsSync(file)) return [];
   const raw = fs.readFileSync(file, "utf8");
   return raw
@@ -47,7 +78,7 @@ function readStockLines(product) {
 }
 
 function writeStockLines(product, lines) {
-  const file = `${STOCK_DIR}/${product}.txt`;
+  const file = path.join(STOCK_DIR, `${product}.txt`);
   fs.writeFileSync(file, lines.join("\n"));
 }
 
@@ -61,14 +92,20 @@ function takeStock(product, amount) {
 
   const taken = lines.splice(0, amount);
   writeStockLines(product, lines);
-  return taken.join("\n"); // RAW
+  return taken.join("\n");
 }
 
 // ===== RENDER HELPERS =====
 async function renderHome(ctx) {
   const products = getProducts();
+
+  // Fix Bug #5: edit pesan jika dipanggil dari callback, reply jika dari command
+  const send = ctx.callbackQuery
+    ? (text, extra) => ctx.editMessageText(text, extra)
+    : (text, extra) => ctx.reply(text, extra);
+
   if (products.length === 0) {
-    return ctx.reply(
+    return send(
       "👋 Halo, Admin.\n\n" +
       "⚠️ Belum ada produk terdaftar.\n\n" +
       "Gunakan tombol di bawah untuk membuat produk pertama.",
@@ -82,7 +119,7 @@ async function renderHome(ctx) {
   buttons.push([Markup.button.callback("📦 Cek Semua Stok", "allstock_btn")]);
   buttons.push([Markup.button.callback("➕ Create Product", "create_product_btn")]);
 
-  return ctx.reply(
+  return send(
     "👋 Halo, Admin.\n\nPilih produk atau aksi:",
     Markup.inlineKeyboard(buttons)
   );
@@ -134,6 +171,7 @@ async function replyAllStock(ctx) {
 
 bot.action("allstock_btn", async (ctx) => {
   if (!adminOnly(ctx)) return;
+  await ctx.answerCbQuery(); // Fix Bug #4
   await replyAllStock(ctx);
 });
 
@@ -145,35 +183,40 @@ bot.command("allstock", async (ctx) => {
 // ===== CREATE PRODUCT (BUTTON) =====
 bot.action("create_product_btn", async (ctx) => {
   if (!adminOnly(ctx)) return;
-  userSession[ctx.from.id] = { step: "input_product_name" };
+  await ctx.answerCbQuery(); // Fix Bug #4
+  setSession(ctx.from.id, { step: "input_product_name" });
   await ctx.reply("Masukkan nama produk:");
 });
 
 // ===== PICK PRODUCT =====
-bot.action(/pick_(.+)/, async (ctx) => {
+bot.action(/^pick_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
   if (!adminOnly(ctx)) return;
+  await ctx.answerCbQuery(); // Fix Bug #4
   const product = ctx.match[1];
-  userSession[ctx.from.id] = { product };
+  setSession(ctx.from.id, { product });
   await renderProductPanel(ctx, product);
 });
 
 // ===== BACK =====
 bot.action("back_home", async (ctx) => {
   if (!adminOnly(ctx)) return;
-  delete userSession[ctx.from.id];
+  await ctx.answerCbQuery(); // Fix Bug #4
+  deleteSession(ctx.from.id);
   await renderHome(ctx);
 });
 
-bot.action(/back_product_(.+)/, async (ctx) => {
+bot.action(/^back_product_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
   if (!adminOnly(ctx)) return;
+  await ctx.answerCbQuery(); // Fix Bug #4
   const product = ctx.match[1];
-  userSession[ctx.from.id] = { product };
+  setSession(ctx.from.id, { product });
   await renderProductPanel(ctx, product);
 });
 
 // ===== TAKE =====
-bot.action(/take_(.+)/, async (ctx) => {
+bot.action(/^take_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
   if (!adminOnly(ctx)) return;
+  await ctx.answerCbQuery(); // Fix Bug #4
 
   const product = ctx.match[1];
   const stock = getStockCount(product);
@@ -181,7 +224,7 @@ bot.action(/take_(.+)/, async (ctx) => {
     return ctx.reply(`⚠️ Stok ${product.toUpperCase()} kosong.`);
   }
 
-  userSession[ctx.from.id] = { product, step: "input_qty_take" };
+  setSession(ctx.from.id, { product, step: "input_qty_take" });
   await ctx.reply(
     `Masukkan jumlah ${product} yang ingin diambil (angka saja):`,
     Markup.inlineKeyboard([[Markup.button.callback("⬅️ Kembali", `back_product_${product}`)]])
@@ -189,11 +232,12 @@ bot.action(/take_(.+)/, async (ctx) => {
 });
 
 // ===== REMOVE =====
-bot.action(/remove_(.+)/, async (ctx) => {
+bot.action(/^remove_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
   if (!adminOnly(ctx)) return;
+  await ctx.answerCbQuery(); // Fix Bug #4
 
   const product = ctx.match[1];
-  userSession[ctx.from.id] = { product, step: "input_qty_remove" };
+  setSession(ctx.from.id, { product, step: "input_qty_remove" });
   await ctx.reply(
     `Masukkan jumlah ${product} yang ingin dikurangi (angka saja):`,
     Markup.inlineKeyboard([[Markup.button.callback("⬅️ Kembali", `back_product_${product}`)]])
@@ -201,11 +245,12 @@ bot.action(/remove_(.+)/, async (ctx) => {
 });
 
 // ===== ADD (UPLOAD MODE) =====
-bot.action(/add_(.+)/, async (ctx) => {
+bot.action(/^add_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
   if (!adminOnly(ctx)) return;
+  await ctx.answerCbQuery(); // Fix Bug #4
 
   const product = ctx.match[1];
-  userSession[ctx.from.id] = { product, step: "upload_stock" };
+  setSession(ctx.from.id, { product, step: "upload_stock" });
   await ctx.reply(
     `Upload file .txt untuk produk ${product.toUpperCase()} (RAW MODE):`,
     Markup.inlineKeyboard([[Markup.button.callback("⬅️ Kembali", `back_product_${product}`)]])
@@ -216,7 +261,7 @@ bot.action(/add_(.+)/, async (ctx) => {
 bot.on("text", async (ctx) => {
   if (!adminOnly(ctx)) return;
 
-  const session = userSession[ctx.from.id];
+  const session = getSession(ctx.from.id);
   if (!session) return;
 
   // CREATE PRODUCT FLOW
@@ -225,13 +270,13 @@ bot.on("text", async (ctx) => {
     if (!product) return ctx.reply("Nama produk tidak boleh kosong.");
 
     await fs.ensureDir(STOCK_DIR);
-    const file = `${STOCK_DIR}/${product}.txt`;
+    const file = path.join(STOCK_DIR, `${product}.txt`);
     if (fs.existsSync(file)) {
       return ctx.reply(`❌ Produk ${product.toUpperCase()} sudah ada.`);
     }
 
     await fs.writeFile(file, "");
-    delete userSession[ctx.from.id];
+    deleteSession(ctx.from.id);
 
     const stock = getStockCount(product);
     return ctx.reply(
@@ -244,6 +289,9 @@ bot.on("text", async (ctx) => {
       ])
     );
   }
+
+  // Fix Bug #7: guard — abaikan jika step bukan take/remove
+  if (session.step !== "input_qty_take" && session.step !== "input_qty_remove") return;
 
   // TAKE / REMOVE FLOW
   const qty = parseInt(ctx.message.text);
@@ -259,9 +307,8 @@ bot.on("text", async (ctx) => {
     }
 
     const result = takeStock(session.product, qty);
-    delete userSession[ctx.from.id];
+    deleteSession(ctx.from.id);
 
-    // monospace per baris (MarkdownV2 safe)
     const mdEscape = (t) => t.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
     const formatted = result
       .split("\n")
@@ -279,7 +326,7 @@ bot.on("text", async (ctx) => {
     lines.splice(0, qty);
     writeStockLines(session.product, lines);
 
-    delete userSession[ctx.from.id];
+    deleteSession(ctx.from.id);
     return ctx.reply(`✅ Berhasil mengurangi ${formatNumberID(qty)} stok ${session.product.toUpperCase()}.`);
   }
 });
@@ -288,7 +335,7 @@ bot.on("text", async (ctx) => {
 bot.on("document", async (ctx) => {
   if (!adminOnly(ctx)) return;
 
-  const session = userSession[ctx.from.id];
+  const session = getSession(ctx.from.id);
   if (!session || session.step !== "upload_stock") {
     return ctx.reply("Gunakan panel produk untuk upload stok.");
   }
@@ -312,10 +359,14 @@ bot.on("document", async (ctx) => {
   writeStockLines(session.product, merged);
 
   const total = merged.length;
-  delete userSession[ctx.from.id];
+  deleteSession(ctx.from.id);
 
   ctx.reply(`✅ Stok ${session.product.toUpperCase()} berhasil ditambahkan.\nTotal stok sekarang: ${formatNumberID(total)}`);
 });
 
 bot.launch();
 console.log("Bot running...");
+
+// Fix Bug #6: graceful shutdown
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
