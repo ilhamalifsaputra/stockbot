@@ -1,3 +1,4 @@
+import express from "express";
 import { Telegraf, Markup } from "telegraf";
 import fs from "fs-extra";
 import dotenv from "dotenv";
@@ -7,6 +8,7 @@ import path from "path";
 
 dotenv.config();
 
+const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ===== CONFIG =====
@@ -14,6 +16,8 @@ const ADMINS = [5840513237]; // Admin Telegram ID
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STOCK_DIR = path.join(__dirname, "stock");
 const SESSION_FILE = path.join(__dirname, "sessions.json");
+const PORT = process.env.PORT || 3000;
+const WEBHOOK_URL = process.env.WEBHOOK_URL; // e.g. https://your-domain.com
 
 // ===== GUARD =====
 function adminOnly(ctx) {
@@ -304,7 +308,6 @@ bot.action(/^add_(.+)$/, async (ctx) => {
 bot.on("text", async (ctx) => {
   if (!adminOnly(ctx)) return;
 
-  // Abaikan jika teks adalah Reply Keyboard button (sudah dihandle hears)
   if (ctx.message.text === "🚀 Mulai") return;
 
   const session = getSession(ctx.from.id);
@@ -409,8 +412,34 @@ bot.on("document", async (ctx) => {
   ctx.reply(`✅ Stok ${session.product.toUpperCase()} berhasil ditambahkan.\nTotal stok sekarang: ${formatNumberID(total)}`);
 });
 
-bot.launch();
-console.log("Bot running...");
+// ===== EXPRESS ROUTES =====
+app.get("/", (_req, res) => {
+  res.json({ status: "ok", message: "StockBot is running." });
+});
 
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", uptime: process.uptime() });
+});
+
+app.get("/stock", (_req, res) => {
+  const products = getProducts();
+  const data = products.map(p => ({ product: p, stock: getStockCount(p) }));
+  res.json(data);
+});
+
+// ===== LAUNCH =====
+if (WEBHOOK_URL) {
+  // Webhook mode — pakai saat deploy ke server publik
+  const webhookPath = "/webhook";
+  app.use(webhookPath, bot.webhookCallback(webhookPath));
+  bot.telegram.setWebhook(`${WEBHOOK_URL}${webhookPath}`);
+  app.listen(PORT, () => console.log(`Server running on port ${PORT} (webhook mode)`));
+} else {
+  // Polling mode — untuk development lokal
+  app.listen(PORT, () => console.log(`Server running on port ${PORT} (polling mode)`));
+  bot.launch();
+  console.log("Bot running...");
+
+  process.once("SIGINT", () => bot.stop("SIGINT"));
+  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+}
