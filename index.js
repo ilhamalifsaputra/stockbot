@@ -431,9 +431,13 @@ app.get("/stock", (_req, res) => {
 if (WEBHOOK_URL) {
   // Webhook mode — pakai saat deploy ke server publik
   const webhookPath = "/webhook";
-  app.use(webhookPath, bot.webhookCallback(webhookPath));
-  bot.telegram.setWebhook(`${WEBHOOK_URL}${webhookPath}`);
-  app.listen(PORT, () => console.log(`Server running on port ${PORT} (webhook mode)`));
+  // Daftarkan handler TANPA prefix di app.use — biarkan Telegraf handle routing sendiri
+  app.use(bot.webhookCallback(webhookPath));
+  app.listen(PORT, async () => {
+    await bot.telegram.setWebhook(`${WEBHOOK_URL}${webhookPath}`);
+    console.log(`Server running on port ${PORT} (webhook mode)`);
+    console.log(`Webhook set to: ${WEBHOOK_URL}${webhookPath}`);
+  });
 } else {
   // Polling mode — untuk development lokal
   app.listen(PORT, () => console.log(`Server running on port ${PORT} (polling mode)`));
