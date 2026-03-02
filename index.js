@@ -12,8 +12,8 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 // ===== CONFIG =====
 const ADMINS = [5840513237]; // Admin Telegram ID
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const STOCK_DIR = path.join(__dirname, "stock");       // Fix Bug #1: path absolut
-const SESSION_FILE = path.join(__dirname, "sessions.json"); // Fix Bug #2: persistent session
+const STOCK_DIR = path.join(__dirname, "stock");
+const SESSION_FILE = path.join(__dirname, "sessions.json");
 
 // ===== GUARD =====
 function adminOnly(ctx) {
@@ -24,7 +24,7 @@ function adminOnly(ctx) {
   return true;
 }
 
-// ===== PERSISTENT SESSION =====  Fix Bug #2
+// ===== PERSISTENT SESSION =====
 function getSession(userId) {
   if (!fs.existsSync(SESSION_FILE)) return null;
   try {
@@ -96,35 +96,52 @@ function takeStock(product, amount) {
 }
 
 // ===== RENDER HELPERS =====
+
+// Screen 0: Welcome — Reply Keyboard persisten "🚀 Mulai"
+async function renderWelcome(ctx) {
+  if (ctx.callbackQuery) {
+    await ctx.answerCbQuery();
+    try { await ctx.deleteMessage(); } catch {}
+  }
+  deleteSession(ctx.from.id);
+  return ctx.reply(
+    "👋 Halo, Admin!\n\nTekan tombol Mulai di bawah untuk membuka menu.",
+    Markup.keyboard([["🚀 Mulai"]]).resize()
+  );
+}
+
+// Screen 1: List Produk — Inline keyboard
 async function renderHome(ctx) {
   const products = getProducts();
 
-  // Fix Bug #5: edit pesan jika dipanggil dari callback, reply jika dari command
   const send = ctx.callbackQuery
     ? (text, extra) => ctx.editMessageText(text, extra)
     : (text, extra) => ctx.reply(text, extra);
 
   if (products.length === 0) {
     return send(
-      "👋 Halo, Admin.\n\n" +
-      "⚠️ Belum ada produk terdaftar.\n\n" +
-      "Gunakan tombol di bawah untuk membuat produk pertama.",
+      "📋 List Produk\n\n⚠️ Belum ada produk terdaftar.",
       Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Create Product", "create_product_btn")]
+        [Markup.button.callback("➕ Buat Produk", "create_product_btn")],
+        [Markup.button.callback("⬅️ Kembali", "back_welcome")]
       ])
     );
   }
 
   const buttons = products.map(p => [Markup.button.callback(p.toUpperCase(), `pick_${p}`)]);
-  buttons.push([Markup.button.callback("📦 Cek Semua Stok", "allstock_btn")]);
-  buttons.push([Markup.button.callback("➕ Create Product", "create_product_btn")]);
+  buttons.push([
+    Markup.button.callback("📊 Cek Stok", "allstock_btn"),
+    Markup.button.callback("➕ Buat Produk", "create_product_btn")
+  ]);
+  buttons.push([Markup.button.callback("⬅️ Kembali", "back_welcome")]);
 
   return send(
-    "👋 Halo, Admin.\n\nPilih produk atau aksi:",
+    "📋 List Produk\n\nPilih produk atau aksi:",
     Markup.inlineKeyboard(buttons)
   );
 }
 
+// Screen 2: Panel Produk — Inline keyboard
 async function renderProductPanel(ctx, product) {
   const stock = getStockCount(product);
   const stockFmt = formatNumberID(stock);
@@ -150,73 +167,99 @@ async function renderProductPanel(ctx, product) {
   );
 }
 
-// ===== START =====
-bot.start(async (ctx) => {
-  if (!adminOnly(ctx)) return;
-  await renderHome(ctx);
-});
-
-// ===== ALL STOCK (BUTTON + COMMAND) =====
-async function replyAllStock(ctx) {
+// Screen 3: Cek Stok — Inline keyboard + back button
+async function renderAllStock(ctx) {
   const products = getProducts();
+
+  const send = ctx.callbackQuery
+    ? (text, extra) => ctx.editMessageText(text, extra)
+    : (text, extra) => ctx.reply(text, extra);
+
   if (products.length === 0) {
-    return ctx.reply("⚠️ Belum ada produk terdaftar.");
+    return send(
+      "⚠️ Belum ada produk terdaftar.",
+      Markup.inlineKeyboard([[Markup.button.callback("⬅️ Kembali", "back_home")]])
+    );
   }
+
   const lines = products.map(p => {
     const c = getStockCount(p);
     return `${p.toUpperCase()}: ${formatNumberID(c)}${c === 0 ? " ⚠️" : ""}`;
   });
-  return ctx.reply("📊 Laporan Stok Semua Produk\n\n" + lines.join("\n"));
+
+  return send(
+    "📊 Laporan Stok Semua Produk\n\n" + lines.join("\n"),
+    Markup.inlineKeyboard([[Markup.button.callback("⬅️ Kembali", "back_home")]])
+  );
 }
 
+// ===== START =====
+bot.start(async (ctx) => {
+  if (!adminOnly(ctx)) return;
+  await renderWelcome(ctx);
+});
+
+// ===== REPLY KEYBOARD: MULAI =====
+bot.hears("🚀 Mulai", async (ctx) => {
+  if (!adminOnly(ctx)) return;
+  deleteSession(ctx.from.id);
+  await renderHome(ctx);
+});
+
+// ===== CEK STOK =====
 bot.action("allstock_btn", async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await ctx.answerCbQuery(); // Fix Bug #4
-  await replyAllStock(ctx);
+  await ctx.answerCbQuery();
+  await renderAllStock(ctx);
 });
 
 bot.command("allstock", async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await replyAllStock(ctx);
+  await renderAllStock(ctx);
 });
 
-// ===== CREATE PRODUCT (BUTTON) =====
+// ===== BUAT PRODUK =====
 bot.action("create_product_btn", async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await ctx.answerCbQuery(); // Fix Bug #4
+  await ctx.answerCbQuery();
   setSession(ctx.from.id, { step: "input_product_name" });
   await ctx.reply("Masukkan nama produk:");
 });
 
 // ===== PICK PRODUCT =====
-bot.action(/^pick_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
+bot.action(/^pick_(.+)$/, async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await ctx.answerCbQuery(); // Fix Bug #4
+  await ctx.answerCbQuery();
   const product = ctx.match[1];
   setSession(ctx.from.id, { product });
   await renderProductPanel(ctx, product);
 });
 
 // ===== BACK =====
+bot.action("back_welcome", async (ctx) => {
+  if (!adminOnly(ctx)) return;
+  await renderWelcome(ctx);
+});
+
 bot.action("back_home", async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await ctx.answerCbQuery(); // Fix Bug #4
+  await ctx.answerCbQuery();
   deleteSession(ctx.from.id);
   await renderHome(ctx);
 });
 
-bot.action(/^back_product_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
+bot.action(/^back_product_(.+)$/, async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await ctx.answerCbQuery(); // Fix Bug #4
+  await ctx.answerCbQuery();
   const product = ctx.match[1];
   setSession(ctx.from.id, { product });
   await renderProductPanel(ctx, product);
 });
 
 // ===== TAKE =====
-bot.action(/^take_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
+bot.action(/^take_(.+)$/, async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await ctx.answerCbQuery(); // Fix Bug #4
+  await ctx.answerCbQuery();
 
   const product = ctx.match[1];
   const stock = getStockCount(product);
@@ -232,9 +275,9 @@ bot.action(/^take_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
 });
 
 // ===== REMOVE =====
-bot.action(/^remove_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
+bot.action(/^remove_(.+)$/, async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await ctx.answerCbQuery(); // Fix Bug #4
+  await ctx.answerCbQuery();
 
   const product = ctx.match[1];
   setSession(ctx.from.id, { product, step: "input_qty_remove" });
@@ -245,9 +288,9 @@ bot.action(/^remove_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
 });
 
 // ===== ADD (UPLOAD MODE) =====
-bot.action(/^add_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
+bot.action(/^add_(.+)$/, async (ctx) => {
   if (!adminOnly(ctx)) return;
-  await ctx.answerCbQuery(); // Fix Bug #4
+  await ctx.answerCbQuery();
 
   const product = ctx.match[1];
   setSession(ctx.from.id, { product, step: "upload_stock" });
@@ -260,6 +303,9 @@ bot.action(/^add_(.+)$/, async (ctx) => {  // Fix Bug #3: regex dianchor
 // ===== HANDLE TEXT =====
 bot.on("text", async (ctx) => {
   if (!adminOnly(ctx)) return;
+
+  // Abaikan jika teks adalah Reply Keyboard button (sudah dihandle hears)
+  if (ctx.message.text === "🚀 Mulai") return;
 
   const session = getSession(ctx.from.id);
   if (!session) return;
@@ -290,7 +336,6 @@ bot.on("text", async (ctx) => {
     );
   }
 
-  // Fix Bug #7: guard — abaikan jika step bukan take/remove
   if (session.step !== "input_qty_take" && session.step !== "input_qty_remove") return;
 
   // TAKE / REMOVE FLOW
@@ -367,6 +412,5 @@ bot.on("document", async (ctx) => {
 bot.launch();
 console.log("Bot running...");
 
-// Fix Bug #6: graceful shutdown
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
